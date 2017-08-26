@@ -59,7 +59,7 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
         // set initialized
         is_initialized = true;
 
-        cout << "called init" << " using number of particles = " << num_particles << endl << endl;
+        cout << "NOTE:" << " using number of particles = " << num_particles << endl << endl;
 }
 
 void ParticleFilter::prediction(double delta_t, double std_pos[], double velocity, double yaw_rate) {
@@ -83,6 +83,10 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
         double y;
         double r;
 
+	// This line creates a normal (Gaussian) distribution for adding noise 
+	normal_distribution<double> dist_x  (0,     std_pos[0]);
+	normal_distribution<double> dist_y  (0,     std_pos[1]);
+	normal_distribution<double> dist_psi(0,     std_pos[2]);
 
         for (int i; i < num_particles; ++i) { 
 
@@ -100,14 +104,10 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
             r = particles[i].theta + yaw_rate * delta_t;
           } 
 
-	// This line creates a normal (Gaussian) distribution for adding noise 
-	normal_distribution<double> dist_x  (x,     std_pos[0]);
-	normal_distribution<double> dist_y  (y,     std_pos[1]);
-	normal_distribution<double> dist_psi(r,     std_pos[2]);
        
-	particles[i].x       = dist_x(gen);
-	particles[i].y       = dist_y(gen);
-	particles[i].theta   = dist_psi(gen);
+	particles[i].x       = x + dist_x(gen);
+	particles[i].y       = y + dist_y(gen);
+	particles[i].theta   = r + dist_psi(gen);
  
      }
        
@@ -148,7 +148,7 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
               }
            }
            // check if min_dis has been found
-           if (min_dis == HIGH_NUM) cout << " Error: no min distance found for observation =" << i << endl;
+           if (min_dis == HIGH_NUM) cout << "ERROR: no min distance found for observation =" << i << endl;
              
         }       
 }
@@ -177,6 +177,12 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
         // 3. calc. gaussian
         // 4. normalize weights - done in resample method using   
 
+        // static for weight calculation
+        static double gauss_norm = (1/(2 * M_PI * std_landmark[0] * std_landmark[1]));
+        static double exp_div_x  = 2 * std_landmark[0] * std_landmark[0];
+        static double exp_div_y  = 2 * std_landmark[1] * std_landmark[1];
+
+
         // for each particle
         for (int i=0;i<num_particles;++i) {
 
@@ -204,49 +210,66 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
           }
 
           ///////////////////////////////////////////////////////////////////////////////
-          // transform from vehcile to map coord.
+          // check if landmarks exist 
           ///////////////////////////////////////////////////////////////////////////////
-          std::vector<LandmarkObs> observations_map;
-          observations_map.resize(observations.size());
+          if (landmarks_map.size() > 0) {
+
+            ///////////////////////////////////////////////////////////////////////////////
+            // transform from vehcile to map coord.
+            ///////////////////////////////////////////////////////////////////////////////
+            std::vector<LandmarkObs> observations_map;
+            observations_map.resize(observations.size());
         
-          for (int k=0;k<observations.size();++k) {
+            for (int k=0;k<observations.size();++k) {
 
-             // counterwise rotation  
-             observations_map[k].id  =  observations[k].id;         
-             observations_map[k].x   =  particles[i].x + cos(particles[i].theta) * observations[k].x - sin(particles[i].theta) * observations[k].y;          
-             observations_map[k].y   =  particles[i].y + sin(particles[i].theta) * observations[k].x + cos(particles[i].theta) * observations[k].y; 
+               // counterwise rotation  
+               observations_map[k].id  =  observations[k].id;         
+               observations_map[k].x   =  particles[i].x + cos(particles[i].theta) * observations[k].x - sin(particles[i].theta) * observations[k].y;          
+               observations_map[k].y   =  particles[i].y + sin(particles[i].theta) * observations[k].x + cos(particles[i].theta) * observations[k].y; 
+            }
+
+            ///////////////////////////////////////////////////////////////////////////////
+            // run data association
+            ///////////////////////////////////////////////////////////////////////////////
+            dataAssociation(landmarks_map,observations_map); 
+
+
+            ///////////////////////////////////////////////////////////////////////////////
+            // calculate weights 
+            ///////////////////////////////////////////////////////////////////////////////
+            double weight     = 1.0;
+            
+            for (int w=0;w<observations_map.size();++w) {
+
+               int    index    =   observations_map[w].id; // index may be different to org. landmark id because of filter landmarks map
+
+               double exponent = ((observations_map[w].x - landmarks_map[index].x) * (observations_map[w].x - landmarks_map[index].x)) / (exp_div_x) + 
+                                 ((observations_map[w].y - landmarks_map[index].y) * (observations_map[w].y - landmarks_map[index].y)) / (exp_div_y);
+
+               weight *= gauss_norm * exp(-exponent); 
+
+            }
+
+            // empty vectors
+            observations_map.clear();
+            landmarks_map.clear();
+          
+            // assign to particle
+            particles[i].weight = weight;
+            weights[i]          = weight;
+
+          } // end if check for landmarks exist
+          else {
+
+            // empty vectors
+            landmarks_map.clear();
+
+            // no landmaraks exist for particle
+            particles[i].weight = 0;
+            weights[i]          = 0;
+
           }
-
-          ///////////////////////////////////////////////////////////////////////////////
-          // run data association
-          ///////////////////////////////////////////////////////////////////////////////
-          dataAssociation(landmarks_map,observations_map); 
-
-
-          ///////////////////////////////////////////////////////////////////////////////
-          // calculate weights 
-          ///////////////////////////////////////////////////////////////////////////////
-          double gauss_norm = (1/(2 * M_PI * std_landmark[0] * std_landmark[1]));
-          double weight     = 1.0;
-
-          for (int w=0;w<observations_map.size();++w) {
-
-             int    index    =   observations_map[w].id; // index may be different to org. landmark id because of filter landmarks map
-
-             double exponent = ((observations_map[w].x - landmarks_map[index].x) * (observations_map[w].x - landmarks_map[index].x)) / (2 * std_landmark[0] * std_landmark[0]) + 
-                               ((observations_map[w].y - landmarks_map[index].y) * (observations_map[w].y - landmarks_map[index].y)) / (2 * std_landmark[1] * std_landmark[1]);
-
-             weight *= gauss_norm * exp(-exponent); 
-
-          }
-
-          // assign to particle
-          particles[i].weight = weight;
-          weights[i]          = weight;
-
-          // empty vectors
-          observations_map.clear();
-          landmarks_map.clear();
+ 
 
       }
       
